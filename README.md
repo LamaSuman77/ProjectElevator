@@ -39,9 +39,8 @@ Optional: run `Database\CreateDatabase.sql` in SSMS after the `.mdf` exists, if 
 
 ## How to use the window
 
-- **Outside requests** (left): hall calls. The controller picks A or B (shortest estimated wait).
-- **Shafts**: car A and car B (pictures if `Images\ElevatorA.png` and `ElevatorB.png` are present).
-- **Control panel A / B**: inside buttons. They only move that car. **Emergency** stops that car at the next floor. **Reset** puts it back to idle.
+- **Building view**: GDI+ cross-section (no picture files). Hall buttons sit beside the doors (1 = Up, 2 = Up and Down, 3 = Down). The controller picks A or B.
+- **Car panels**: round floor buttons, Door Open `<|>`, Door Close `|><|`, Alarm, Emergency, Reset.
 - **Log**: loads the history table into the grid (newest first).
 
 ## How to zip for submission
@@ -49,7 +48,7 @@ Optional: run `Database\CreateDatabase.sql` in SSMS after the `.mdf` exists, if 
 1. Run the program once so `ElevatorLog.mdf` is created (optional but recommended).
 2. Close the program so LocalDB releases the file.
 3. Copy `bin\Debug\net8.0-windows\Data\ElevatorLog.mdf` and `ElevatorLog_log.ldf` into the project `Data` folder if they are not already there.
-4. **Do not** zip `bin` and `obj` if the marker asked for source only — but **do** include the `Data` folder with the `.mdf` **and** the `Images` folder (`ElevatorA.png`, `ElevatorB.png`).
+4. **Do not** zip `bin` and `obj` if the marker asked for source only — but **do** include the `Data` folder with the `.mdf`. Cars and doors are drawn with GDI+, so picture files are not required.
 5. Zip the project folder and name it:
 
 `studentID_AssignmentOne.zip`
@@ -63,7 +62,6 @@ Suggested contents:
 - all `.cs` files
 - `Database\CreateDatabase.sql`
 - `Data\` (including `.mdf` if you have it)
-- `Images\` (`ElevatorA.png` and `ElevatorB.png`)
 - `README.md`, `DEMO_NOTES.md`, `TEST_CASES.md`
 
 Exclude if you want a smaller zip: `bin\`, `obj\`.
@@ -72,11 +70,13 @@ Exclude if you want a smaller zip: `bin\`, `obj\`.
 
 | File | Role |
 | --- | --- |
-| `Form1.cs` | UI and button handlers |
-| `Elevator.cs` | One car: queue, timer, events |
+| `Form1.cs` | UI wiring only |
+| `BuildingView.cs` | GDI+ building, shafts, cars, doors, hall buttons |
+| `ElevatorPanel.cs` | Inside control panel (UserControl) |
+| `Elevator.cs` | One car: queue, timer, doors, events |
 | `ElevatorController.cs` | Chooses A or B for hall calls |
 | `DatabaseHelper.cs` | All SQL |
-| `IElevatorState.cs` + `IdleState` / `MovingUpState` / `MovingDownState` / `DoorOpenState` / `EmergencyState` | State pattern |
+| `IElevatorState.cs` + Idle / Moving / DoorsOpening / DoorsOpen / DoorsClosing / Emergency | State pattern |
 | `IElevatorObserver.cs` | Observer pattern |
 | `DEMO_NOTES.md` | Spoken walkthrough |
 | `TEST_CASES.md` | Marking-style tests |

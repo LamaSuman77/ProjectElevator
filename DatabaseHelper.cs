@@ -179,6 +179,30 @@ public class DatabaseHelper
     }
 
     /// <summary>
+    /// Deletes every row from the ElevatorLog table.
+    /// Uses try-catch so it never crashes the application if the database has an issue.
+    /// </summary>
+    public bool ClearLog()
+    {
+        try
+        {
+            using (SqlConnection connection = OpenWorkingConnection())
+            {
+                using (SqlCommand command = new SqlCommand("DELETE FROM ElevatorLog", connection))
+                {
+                    command.ExecuteNonQuery();
+                }
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not clear the log table.\n\n" + ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Returns the Data folder used at runtime (relative to the exe).
     /// </summary>
     public string GetDataFolder()

@@ -4,7 +4,7 @@ using System.Data;
 namespace ElevatorSystem;
 
 /// <summary>
-/// Main window. It draws the building, wires the buttons, and updates labels.
+/// Main window. It wires the building view, the two car panels, status labels and the log grid.
 /// All elevator rules live in Elevator / ElevatorController. All SQL lives in DatabaseHelper.
 /// </summary>
 public partial class Form1 : Form, IElevatorObserver
@@ -15,11 +15,8 @@ public partial class Form1 : Form, IElevatorObserver
     private ElevatorController _controller;
     private BackgroundWorker _saveWorker;
     private BackgroundWorker _loadWorker;
+    private BackgroundWorker _clearWorker;
     private readonly Queue<LogEntry> _pendingSaves = new Queue<LogEntry>();
-    private Label[] _floorLabelsA;
-    private Label[] _floorLabelsB;
-    private Image _carImageA;
-    private Image _carImageB;
 
     /// <summary>
     /// Builds the window controls.
@@ -38,131 +35,134 @@ public partial class Form1 : Form, IElevatorObserver
         _database.InitializeDatabase();
         lblDataPath.Text = "Database file: Data\\ElevatorLog.mdf  (folder: " + _database.GetDataFolder() + ")";
 
-        int[] floorY = BuildFloorYPositions();
+        int[] floorY = buildingView.GetFloorYPositions();
 
-        _elevatorA = new Elevator(AppConstants.ElevatorIdA, AppConstants.ElevatorNameA, pnlCarA, floorY);
-        _elevatorB = new Elevator(AppConstants.ElevatorIdB, AppConstants.ElevatorNameB, pnlCarB, floorY);
+        _elevatorA = new Elevator(AppConstants.ElevatorIdA, AppConstants.ElevatorNameA, floorY);
+        _elevatorB = new Elevator(AppConstants.ElevatorIdB, AppConstants.ElevatorNameB, floorY);
         _controller = new ElevatorController(_elevatorA, _elevatorB);
+
+        buildingView.Bind(_elevatorA, _elevatorB);
+        buildingView.HallCall += BuildingView_HallCall;
+        buildingView.PassengerBoarded += BuildingView_PassengerBoarded;
+        buildingView.PassengerExited += BuildingView_PassengerExited;
 
         _elevatorA.AttachObserver(this);
         _elevatorB.AttachObserver(this);
 
-        // Task 4 also asks for a delegate/event. The form listens as well as using Observer.
         _elevatorA.FloorChanged += ElevatorA_FloorChanged;
         _elevatorB.FloorChanged += ElevatorB_FloorChanged;
+        _elevatorA.DoorStateChanged += Elevator_DoorStateChanged;
+        _elevatorB.DoorStateChanged += Elevator_DoorStateChanged;
 
-        _floorLabelsA = new Label[] { null, lblFloorStatusA1, lblFloorStatusA2, lblFloorStatusA3 };
-        _floorLabelsB = new Label[] { null, lblFloorStatusB1, lblFloorStatusB2, lblFloorStatusB3 };
+        WirePanel(panelA, _elevatorA, AppConstants.SOURCE_ALARM_A, AppConstants.SOURCE_EMERGENCY_A, AppConstants.SOURCE_RESET_A);
+        WirePanel(panelB, _elevatorB, AppConstants.SOURCE_ALARM_B, AppConstants.SOURCE_EMERGENCY_B, AppConstants.SOURCE_RESET_B);
 
         SetupBackgroundWorkers();
-        LoadCarImages();
-        RefreshFloorDisplays(_elevatorA);
-        RefreshFloorDisplays(_elevatorB);
-        pnlCarA.BringToFront();
-        pnlCarB.BringToFront();
+        panelA.ApplyElevator(_elevatorA);
+        panelB.ApplyElevator(_elevatorB);
+        buildingView.Invalidate();
     }
 
     /// <summary>
-    /// Loads ElevatorA.png and ElevatorB.png from the Images folder next to the exe.
-    /// Uses a relative path only. If a file is missing, one message is shown and the coloured letter is kept.
+    /// Connects one car panel so every button only calls a method on that elevator.
     /// </summary>
-    private void LoadCarImages()
+    private void WirePanel(ElevatorPanel panel, Elevator elevator, string alarmSource, string emergencySource, string resetSource)
     {
-        try
+        panel.FloorRequested += floor =>
         {
-            string folder = Path.Combine(AppContext.BaseDirectory, AppConstants.IMAGES_FOLDER);
-            string pathA = Path.Combine(folder, AppConstants.CAR_A_IMAGE);
-            string pathB = Path.Combine(folder, AppConstants.CAR_B_IMAGE);
-            bool loadedOk = true;
-
-            if (File.Exists(pathA))
+            // If a passenger is inside riding, set their destination floor
+            if (AppConstants.ENABLE_PASSENGER)
             {
-                _carImageA = new Bitmap(pathA);
-                picCarA.Image = _carImageA;
-                lblCarA.Visible = false;
-                picCarA.BringToFront();
-            }
-            else
-            {
-                loadedOk = false;
-                lblCarA.BringToFront();
+                buildingView.SetPassengerDestination(elevator.ElevatorId, floor);
             }
 
-            if (File.Exists(pathB))
+            elevator.MoveElevatorTo(floor, "Panel Button F" + floor);
+        };
+        panel.DoorOpenClicked += (s, e) =>
+        {
+            elevator.RequestDoorOpen(AppConstants.SOURCE_DOOR_OPEN);
+            if (AppConstants.ENABLE_PASSENGER && !elevator.IsMoving)
             {
-                _carImageB = new Bitmap(pathB);
-                picCarB.Image = _carImageB;
-                lblCarB.Visible = false;
-                picCarB.BringToFront();
+                buildingView.SpawnPassenger(elevator.CurrentFloor, elevator.ElevatorId);
             }
-            else
-            {
-                loadedOk = false;
-                lblCarB.BringToFront();
-            }
+        };
+        panel.DoorCloseClicked += (s, e) => elevator.RequestDoorClose(AppConstants.SOURCE_DOOR_CLOSE);
+        panel.AlarmClicked += (s, e) =>
+        {
+            elevator.PressAlarm(alarmSource);
+            MessageBox.Show("Alarm pressed in Elevator " + elevator.Name, "Alarm",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        };
+        panel.EmergencyClicked += (s, e) => elevator.TriggerEmergency(emergencySource);
+        panel.ResetClicked += (s, e) => elevator.ResetEmergency(resetSource);
+    }
 
-            if (!loadedOk)
+    /// <summary>
+    /// Outside hall button pressed: controller assigns best car, and spawns passenger.
+    /// </summary>
+    private void BuildingView_HallCall(int floor, string direction)
+    {
+        string source = "Hall " + direction + " F" + floor;
+        Elevator chosen = _controller.ChooseElevator(floor);
+        bool taken = _controller.HandleHallRequest(floor, source);
+
+        if (taken)
+        {
+            if (AppConstants.ENABLE_PASSENGER && chosen != null)
             {
-                MessageBox.Show(
-                    "Could not load the elevator pictures. The cars will use the coloured squares with letters instead.",
-                    "Elevator pictures",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                buildingView.SpawnPassenger(floor, chosen.ElevatorId);
             }
         }
-        catch (Exception)
+        else
         {
-            MessageBox.Show(
-                "Could not load the elevator pictures. The cars will use the coloured squares with letters instead.",
-                "Elevator pictures",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            buildingView.ClearHallLights(floor);
         }
     }
 
     /// <summary>
-    /// Frees the bitmaps we created so they do not stay in memory after the window closes.
+    /// Passenger has stepped inside an elevator: shows hint label and logs event.
+    /// </summary>
+    private void BuildingView_PassengerBoarded(int elevatorId)
+    {
+        Elevator elevator = elevatorId == AppConstants.ElevatorIdA ? _elevatorA : _elevatorB;
+        if (elevator != null)
+        {
+            if (elevatorId == AppConstants.ElevatorIdA)
+            {
+                lblStatusA.Text = "Elevator A: " + AppConstants.HintPassengerInside;
+            }
+            else
+            {
+                lblStatusB.Text = "Elevator B: " + AppConstants.HintPassengerInside;
+            }
+
+            OnLogNeeded(elevator, elevator.CurrentFloor, elevator.CurrentFloor,
+                AppConstants.StatusPassengerBoarded, "Passenger " + elevator.Name);
+        }
+    }
+
+    /// <summary>
+    /// Passenger has exited the elevator and left the walkway: logs event.
+    /// </summary>
+    private void BuildingView_PassengerExited(int elevatorId)
+    {
+        Elevator elevator = elevatorId == AppConstants.ElevatorIdA ? _elevatorA : _elevatorB;
+        if (elevator != null)
+        {
+            OnLogNeeded(elevator, elevator.CurrentFloor, elevator.CurrentFloor,
+                AppConstants.StatusPassengerExited, "Passenger " + elevator.Name);
+        }
+    }
+
+    /// <summary>
+    /// Form closing handler.
     /// </summary>
     private void Form1_FormClosing(object sender, FormClosingEventArgs e)
     {
-        if (picCarA.Image != null)
-        {
-            picCarA.Image = null;
-        }
-
-        if (picCarB.Image != null)
-        {
-            picCarB.Image = null;
-        }
-
-        if (_carImageA != null)
-        {
-            _carImageA.Dispose();
-            _carImageA = null;
-        }
-
-        if (_carImageB != null)
-        {
-            _carImageB.Dispose();
-            _carImageB = null;
-        }
     }
 
     /// <summary>
-    /// Calculates the Y pixel for each floor inside the shaft (floor 1 at the bottom).
-    /// </summary>
-    private int[] BuildFloorYPositions()
-    {
-        int[] positions = new int[AppConstants.TOTAL_FLOORS + 1];
-        int carHeight = pnlCarA.Height;
-        positions[3] = 20;
-        positions[2] = (pnlShaftA.Height - carHeight) / 2;
-        positions[1] = pnlShaftA.Height - carHeight - 20;
-        return positions;
-    }
-
-    /// <summary>
-    /// Creates one worker for saving rows and one worker for loading the grid.
+    /// Creates background workers for saving, loading, and clearing log rows.
     /// </summary>
     private void SetupBackgroundWorkers()
     {
@@ -173,110 +173,20 @@ public partial class Form1 : Form, IElevatorObserver
         _loadWorker = new BackgroundWorker();
         _loadWorker.DoWork += LoadWorker_DoWork;
         _loadWorker.RunWorkerCompleted += LoadWorker_RunWorkerCompleted;
+
+        _clearWorker = new BackgroundWorker();
+        _clearWorker.DoWork += ClearWorker_DoWork;
+        _clearWorker.RunWorkerCompleted += ClearWorker_RunWorkerCompleted;
     }
 
     /// <summary>
-    /// Hall button for floor 1. Asks the controller to pick an elevator.
+    /// Enables or disables the database log buttons while background workers run.
     /// </summary>
-    private void btnRequestFloor1_Click(object sender, EventArgs e)
+    private void SetLogButtonsEnabled(bool enabled)
     {
-        _controller.HandleHallRequest(1);
-    }
-
-    /// <summary>
-    /// Hall button for floor 2.
-    /// </summary>
-    private void btnRequestFloor2_Click(object sender, EventArgs e)
-    {
-        _controller.HandleHallRequest(2);
-    }
-
-    /// <summary>
-    /// Hall button for floor 3.
-    /// </summary>
-    private void btnRequestFloor3_Click(object sender, EventArgs e)
-    {
-        _controller.HandleHallRequest(3);
-    }
-
-    /// <summary>
-    /// Panel A button 1. Only elevator A handles this.
-    /// </summary>
-    private void btnPanelAFloor1_Click(object sender, EventArgs e)
-    {
-        _elevatorA.MoveElevatorTo(1, "Panel Button F1");
-    }
-
-    /// <summary>
-    /// Panel A button 2.
-    /// </summary>
-    private void btnPanelAFloor2_Click(object sender, EventArgs e)
-    {
-        _elevatorA.MoveElevatorTo(2, "Panel Button F2");
-    }
-
-    /// <summary>
-    /// Panel A button 3.
-    /// </summary>
-    private void btnPanelAFloor3_Click(object sender, EventArgs e)
-    {
-        _elevatorA.MoveElevatorTo(3, "Panel Button F3");
-    }
-
-    /// <summary>
-    /// Panel B button 1. Only elevator B handles this.
-    /// </summary>
-    private void btnPanelBFloor1_Click(object sender, EventArgs e)
-    {
-        _elevatorB.MoveElevatorTo(1, "Panel Button F1");
-    }
-
-    /// <summary>
-    /// Panel B button 2.
-    /// </summary>
-    private void btnPanelBFloor2_Click(object sender, EventArgs e)
-    {
-        _elevatorB.MoveElevatorTo(2, "Panel Button F2");
-    }
-
-    /// <summary>
-    /// Panel B button 3.
-    /// </summary>
-    private void btnPanelBFloor3_Click(object sender, EventArgs e)
-    {
-        _elevatorB.MoveElevatorTo(3, "Panel Button F3");
-    }
-
-    /// <summary>
-    /// Emergency button for car A. The elevator decides whether to stop now or at the next floor.
-    /// </summary>
-    private void btnEmergencyA_Click(object sender, EventArgs e)
-    {
-        _elevatorA.TriggerEmergency(AppConstants.SOURCE_EMERGENCY_A);
-    }
-
-    /// <summary>
-    /// Reset button for car A. Puts A back to idle if it is in emergency.
-    /// </summary>
-    private void btnResetA_Click(object sender, EventArgs e)
-    {
-        _elevatorA.ResetEmergency(AppConstants.SOURCE_RESET_A);
-    }
-
-    /// <summary>
-    /// Emergency button for car B.
-    /// </summary>
-    private void btnEmergencyB_Click(object sender, EventArgs e)
-    {
-        _elevatorB.TriggerEmergency(AppConstants.SOURCE_EMERGENCY_B);
-    }
-
-    /// <summary>
-    /// Reset button for car B.
-    /// </summary>
-    private void btnResetB_Click(object sender, EventArgs e)
-    {
-        _elevatorB.ResetEmergency(AppConstants.SOURCE_RESET_B);
+        btnLog.Enabled = enabled;
+        btnRefreshLog.Enabled = enabled;
+        btnClearLog.Enabled = enabled;
     }
 
     /// <summary>
@@ -284,14 +194,55 @@ public partial class Form1 : Form, IElevatorObserver
     /// </summary>
     private void btnLog_Click(object sender, EventArgs e)
     {
-        if (_loadWorker.IsBusy)
+        if (_loadWorker.IsBusy || _clearWorker.IsBusy)
         {
             return;
         }
 
-        btnLog.Enabled = false;
+        SetLogButtonsEnabled(false);
         btnLog.Text = "Loading...";
         _loadWorker.RunWorkerAsync();
+    }
+
+    /// <summary>
+    /// Refreshes the log DataGridView with the latest database records on a background thread.
+    /// </summary>
+    private void btnRefreshLog_Click(object sender, EventArgs e)
+    {
+        if (_loadWorker.IsBusy || _clearWorker.IsBusy)
+        {
+            return;
+        }
+
+        SetLogButtonsEnabled(false);
+        btnRefreshLog.Text = "Refreshing...";
+        _loadWorker.RunWorkerAsync();
+    }
+
+    /// <summary>
+    /// Prompts the user and deletes all records from the database table on a background thread.
+    /// </summary>
+    private void btnClearLog_Click(object sender, EventArgs e)
+    {
+        if (_loadWorker.IsBusy || _clearWorker.IsBusy)
+        {
+            return;
+        }
+
+        DialogResult result = MessageBox.Show(
+            "Are you sure you want to clear the entire elevator log history?",
+            "Clear Log",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
+
+        if (result != DialogResult.Yes)
+        {
+            return;
+        }
+
+        SetLogButtonsEnabled(false);
+        btnClearLog.Text = "Clearing...";
+        _clearWorker.RunWorkerAsync();
     }
 
     /// <summary>
@@ -299,7 +250,8 @@ public partial class Form1 : Form, IElevatorObserver
     /// </summary>
     private void ElevatorA_FloorChanged(int floor, string direction)
     {
-        UpdatePanelDisplay(lblCurrentFloorA, lblArrowA, floor, direction, _elevatorA.IsInEmergency);
+        panelA.ApplyElevator(_elevatorA);
+        buildingView.Invalidate();
     }
 
     /// <summary>
@@ -307,28 +259,43 @@ public partial class Form1 : Form, IElevatorObserver
     /// </summary>
     private void ElevatorB_FloorChanged(int floor, string direction)
     {
-        UpdatePanelDisplay(lblCurrentFloorB, lblArrowB, floor, direction, _elevatorB.IsInEmergency);
+        panelB.ApplyElevator(_elevatorB);
+        buildingView.Invalidate();
     }
 
     /// <summary>
-    /// Observer: refresh the three floor lights and the control-panel number.
+    /// DoorStateChanged delegate: when doors open at a floor, the hall lights on that floor go out.
+    /// </summary>
+    private void Elevator_DoorStateChanged(int elevatorId, string doorState)
+    {
+        if (doorState == AppConstants.DoorStateOpening || doorState == AppConstants.DoorStateOpen)
+        {
+            Elevator elevator = elevatorId == AppConstants.ElevatorIdA ? _elevatorA : _elevatorB;
+            buildingView.ClearHallLights(elevator.CurrentFloor);
+        }
+
+        buildingView.Invalidate();
+    }
+
+    /// <summary>
+    /// Observer: refresh the car panel display and the hall lanterns.
     /// </summary>
     public void OnFloorChanged(Elevator elevator, int floor, string direction)
     {
         if (elevator.ElevatorId == AppConstants.ElevatorIdA)
         {
-            UpdatePanelDisplay(lblCurrentFloorA, lblArrowA, floor, direction, elevator.IsInEmergency);
-            RefreshFloorDisplays(elevator);
+            panelA.ApplyElevator(elevator);
         }
         else
         {
-            UpdatePanelDisplay(lblCurrentFloorB, lblArrowB, floor, direction, elevator.IsInEmergency);
-            RefreshFloorDisplays(elevator);
+            panelB.ApplyElevator(elevator);
         }
+
+        buildingView.Invalidate();
     }
 
     /// <summary>
-    /// Observer: write the movement sentence under the shafts.
+    /// Observer: write the movement sentence under the panels.
     /// </summary>
     public void OnStatusChanged(Elevator elevator, string statusText)
     {
@@ -336,11 +303,13 @@ public partial class Form1 : Form, IElevatorObserver
         {
             lblStatusA.Text = statusText;
             lblStatusA.ForeColor = elevator.IsInEmergency ? Color.Red : SystemColors.ControlText;
+            panelA.ApplyElevator(elevator);
         }
         else
         {
             lblStatusB.Text = statusText;
             lblStatusB.ForeColor = elevator.IsInEmergency ? Color.Red : SystemColors.ControlText;
+            panelB.ApplyElevator(elevator);
         }
     }
 
@@ -360,53 +329,29 @@ public partial class Form1 : Form, IElevatorObserver
     }
 
     /// <summary>
-    /// Highlights the floor where the car currently is.
+    /// Observer: doors changed. The building view redraws from the elevator values.
     /// </summary>
-    private void RefreshFloorDisplays(Elevator elevator)
+    public void OnDoorStateChanged(Elevator elevator, string doorState)
     {
-        Label[] labels = elevator.ElevatorId == AppConstants.ElevatorIdA ? _floorLabelsA : _floorLabelsB;
-        string arrow = elevator.IsInEmergency ? AppConstants.DISPLAY_EMERGENCY : ArrowFor(elevator.Direction);
-
-        for (int floor = 1; floor <= AppConstants.TOTAL_FLOORS; floor++)
+        if (elevator.ElevatorId == AppConstants.ElevatorIdA)
         {
-            bool here = floor == elevator.CurrentFloor;
-            labels[floor].Text = here
-                ? "Elevator " + elevator.Name + "\nFloor " + floor + " " + arrow
-                : "Floor " + floor;
-            labels[floor].BackColor = here
-                ? (elevator.IsInEmergency ? Color.FromArgb(255, 205, 210) : Color.FromArgb(255, 236, 150))
-                : Color.White;
-            labels[floor].ForeColor = here && elevator.IsInEmergency ? Color.Red : Color.Black;
-            labels[floor].Font = new Font("Segoe UI", here ? 9F : 9F, here ? FontStyle.Bold : FontStyle.Regular);
+            panelA.ApplyElevator(elevator);
         }
+        else
+        {
+            panelB.ApplyElevator(elevator);
+        }
+
+        buildingView.Invalidate();
     }
 
     /// <summary>
-    /// Updates the black display window and the up/down arrow.
+    /// Observer: car, doors, or passenger moved one timer step. Redraw the building.
     /// </summary>
-    private void UpdatePanelDisplay(Label floorLabel, Label arrowLabel, int floor, string direction, bool emergency)
+    public void OnAnimationTick(Elevator elevator)
     {
-        floorLabel.Text = floor.ToString();
-        arrowLabel.Text = emergency ? AppConstants.DISPLAY_EMERGENCY : ArrowFor(direction);
-        arrowLabel.ForeColor = emergency ? Color.Red : Color.Lime;
-    }
-
-    /// <summary>
-    /// Turns direction text into a simple arrow for the displays.
-    /// </summary>
-    private static string ArrowFor(string direction)
-    {
-        if (direction == AppConstants.DirectionUp)
-        {
-            return "▲";
-        }
-
-        if (direction == AppConstants.DirectionDown)
-        {
-            return "▼";
-        }
-
-        return "-";
+        buildingView.TickPassengers();
+        buildingView.Invalidate();
     }
 
     /// <summary>
@@ -452,8 +397,9 @@ public partial class Form1 : Form, IElevatorObserver
     /// </summary>
     private void LoadWorker_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
     {
-        btnLog.Enabled = true;
+        SetLogButtonsEnabled(true);
         btnLog.Text = "Log";
+        btnRefreshLog.Text = "Refresh";
 
         if (e.Error != null)
         {
@@ -464,5 +410,44 @@ public partial class Form1 : Form, IElevatorObserver
 
         DataTable table = e.Result as DataTable;
         dgvLog.DataSource = table;
+    }
+
+    /// <summary>
+    /// Background thread: clear all log records in the database, then load the empty table schema.
+    /// </summary>
+    private void ClearWorker_DoWork(object sender, DoWorkEventArgs e)
+    {
+        bool cleared = _database.ClearLog();
+        if (cleared)
+        {
+            e.Result = _database.LoadLog();
+        }
+        else
+        {
+            e.Result = null;
+        }
+    }
+
+    /// <summary>
+    /// Back on the UI thread: updates the grid after clearing the log.
+    /// </summary>
+    private void ClearWorker_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+    {
+        SetLogButtonsEnabled(true);
+        btnClearLog.Text = "Clear Log";
+
+        if (e.Error != null)
+        {
+            MessageBox.Show("Could not clear the log.\n\n" + e.Error.Message, "Clear Log",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        if (e.Result is DataTable emptyTable)
+        {
+            dgvLog.DataSource = emptyTable;
+            MessageBox.Show("The full log has been cleared successfully.", "Clear Log",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 }

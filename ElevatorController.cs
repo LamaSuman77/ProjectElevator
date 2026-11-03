@@ -20,9 +20,17 @@ public class ElevatorController
 
     /// <summary>
     /// Sends an outside request to the elevator with the shortest estimated wait.
-    /// If both scores are equal, elevator A is used.
+    /// If both scores are equal, elevator A is used. Returns false if nobody can take the call.
     /// </summary>
-    public void HandleHallRequest(int floor)
+    public bool HandleHallRequest(int floor)
+    {
+        return HandleHallRequest(floor, "Hall Button F" + floor);
+    }
+
+    /// <summary>
+    /// Same assignment logic, with a source name such as "Hall Up F2".
+    /// </summary>
+    public bool HandleHallRequest(int floor, string source)
     {
         bool aBusy = _elevatorA.IsInEmergency;
         bool bBusy = _elevatorB.IsInEmergency;
@@ -31,7 +39,7 @@ public class ElevatorController
         {
             MessageBox.Show("No elevator available", "Outside request",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
-            return;
+            return false;
         }
 
         Elevator chosen;
@@ -48,8 +56,8 @@ public class ElevatorController
             chosen = ChooseElevator(floor);
         }
 
-        string source = "Request Button F" + floor;
         chosen.MoveElevatorTo(floor, source);
+        return true;
     }
 
     /// <summary>

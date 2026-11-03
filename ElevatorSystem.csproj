@@ -25,11 +25,4 @@
     </None>
   </ItemGroup>
 
-  <!-- Copy elevator pictures next to the exe so they can be loaded with a relative path. -->
-  <ItemGroup>
-    <None Update="Images\**">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
-
 </Project>

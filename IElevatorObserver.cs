@@ -20,4 +20,14 @@ public interface IElevatorObserver
     /// Called when a row should be written to the database.
     /// </summary>
     void OnLogNeeded(Elevator elevator, int fromFloor, int toFloor, string status, string source);
+
+    /// <summary>
+    /// Called when the doors start opening, stay open, start closing, or finish closed.
+    /// </summary>
+    void OnDoorStateChanged(Elevator elevator, string doorState);
+
+    /// <summary>
+    /// Called on every animation tick so the building picture can redraw.
+    /// </summary>
+    void OnAnimationTick(Elevator elevator);
 }
